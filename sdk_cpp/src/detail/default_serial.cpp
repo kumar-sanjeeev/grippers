@@ -7,9 +7,19 @@
 
 #include <libserialport.h>
 
+#include <cerrno>
+#include <cstring>
 #include <fstream>
 #include <string>
 #include <utility>
+
+#ifdef __linux__
+#include <fcntl.h>
+#include <limits.h>
+#include <poll.h>
+#include <termios.h>
+#include <unistd.h>
+#endif
 
 #include <Robotiq/detail/default_logger.hpp>
 #include <Robotiq/gripper/logger.hpp>
@@ -49,6 +59,64 @@ void check(sp_return result, const std::string& context)
    }
 }
 
+#ifdef __linux__
+std::string describeErrno()
+{
+   return std::strerror(errno);
+}
+
+bool isLinuxPty(const std::string& path)
+{
+   char resolved[PATH_MAX];
+   if(realpath(path.c_str(), resolved) == nullptr)
+   {
+      return false;
+   }
+   constexpr const char prefix[] = "/dev/pts/";
+   return std::strncmp(resolved, prefix, sizeof(prefix) - 1) == 0;
+}
+
+void configurePty(int fd, const std::string& path)
+{
+   termios settings{};
+   if(tcgetattr(fd, &settings) != 0)
+   {
+      throw SerialIOException("reading PTY settings for '" + path + "': " + describeErrno());
+   }
+   cfmakeraw(&settings);
+   settings.c_cflag |= CLOCAL | CREAD;
+   settings.c_cflag &= ~CSTOPB;
+   settings.c_cflag &= ~PARENB;
+   settings.c_cflag &= ~CSIZE;
+   settings.c_cflag |= CS8;
+   settings.c_cc[VMIN] = 0;
+   settings.c_cc[VTIME] = 0;
+   if(tcsetattr(fd, TCSANOW, &settings) != 0)
+   {
+      throw SerialIOException("configuring PTY '" + path + "': " + describeErrno());
+   }
+}
+
+int pollFd(int fd, short events, std::chrono::milliseconds timeout, const std::string& operation)
+{
+   pollfd descriptor{fd, events, 0};
+   int result;
+   do
+   {
+      result = poll(&descriptor, 1, static_cast<int>(timeout.count()));
+   } while(result < 0 && errno == EINTR);
+   if(result < 0)
+   {
+      throw SerialIOException(operation + ": " + describeErrno());
+   }
+   if(result > 0 && (descriptor.revents & (POLLERR | POLLHUP | POLLNVAL)) != 0)
+   {
+      throw SerialIOException(operation + ": PTY disconnected");
+   }
+   return result;
+}
+#endif
+
 } // namespace
 
 std::string deviceBasename(const std::string& port)
@@ -70,7 +138,7 @@ DefaultSerial::~DefaultSerial()
 
 void DefaultSerial::open()
 {
-   if(_portHandle != nullptr)
+   if(isOpen())
    {
       _logger->log(Logger::Level::Debug,
                    "open() called on " + _config.port + " but the port is already open; ignoring.");
@@ -86,6 +154,29 @@ void DefaultSerial::open()
    struct sp_port* handle = nullptr;
    if(sp_get_port_by_name(_config.port.c_str(), &handle) != SP_OK)
    {
+#ifdef __linux__
+      if(isLinuxPty(_config.port))
+      {
+         const int fd = ::open(_config.port.c_str(), O_RDWR | O_NOCTTY | O_NONBLOCK | O_CLOEXEC);
+         if(fd < 0)
+         {
+            throw SerialIOException("opening PTY '" + _config.port + "': " + describeErrno());
+         }
+         try
+         {
+            configurePty(fd, _config.port);
+         }
+         catch(...)
+         {
+            ::close(fd);
+            throw;
+         }
+         _ptyFd = fd;
+         _logger->log(Logger::Level::Info,
+                      "opened Linux PTY '" + _config.port + "' (serial line settings are managed by its bridge).");
+         return;
+      }
+#endif
       throw SerialIOException("no serial port named '" + _config.port + "' (is the device connected?)");
    }
    _portHandle = handle;
@@ -138,7 +229,11 @@ void DefaultSerial::open()
 
 bool DefaultSerial::isOpen() const
 {
+#ifdef __linux__
+   return _portHandle != nullptr || _ptyFd >= 0;
+#else
    return _portHandle != nullptr;
+#endif
 }
 
 void DefaultSerial::close()
@@ -149,10 +244,44 @@ void DefaultSerial::close()
       sp_free_port(_portHandle);
       _portHandle = nullptr;
    }
+#ifdef __linux__
+   if(_ptyFd >= 0)
+   {
+      ::close(_ptyFd);
+      _ptyFd = -1;
+   }
+#endif
 }
 
 std::vector<uint8_t> DefaultSerial::read(size_t size, std::chrono::milliseconds timeout)
 {
+#ifdef __linux__
+   if(_ptyFd >= 0)
+   {
+      std::vector<uint8_t> data(size);
+      if(size == 0 || pollFd(_ptyFd, POLLIN, timeout, "waiting to read from PTY") == 0)
+      {
+         data.clear();
+         return data;
+      }
+      ssize_t result;
+      do
+      {
+         result = ::read(_ptyFd, data.data(), data.size());
+      } while(result < 0 && errno == EINTR);
+      if(result < 0 && (errno == EAGAIN || errno == EWOULDBLOCK))
+      {
+         data.clear();
+         return data;
+      }
+      if(result < 0)
+      {
+         throw SerialIOException("reading from PTY: " + describeErrno());
+      }
+      data.resize(static_cast<size_t>(result));
+      return data;
+   }
+#endif
    if(_portHandle == nullptr)
    {
       throw SerialIOException("read called on closed port");
@@ -170,6 +299,42 @@ std::vector<uint8_t> DefaultSerial::read(size_t size, std::chrono::milliseconds 
 
 void DefaultSerial::write(const std::vector<uint8_t>& data)
 {
+#ifdef __linux__
+   if(_ptyFd >= 0)
+   {
+      const auto deadline = std::chrono::steady_clock::now() + _config.timeout;
+      size_t written = 0;
+      while(written < data.size())
+      {
+         const auto now = std::chrono::steady_clock::now();
+         if(now >= deadline
+            || pollFd(_ptyFd,
+                      POLLOUT,
+                      std::chrono::duration_cast<std::chrono::milliseconds>(deadline - now),
+                      "waiting to write to PTY")
+                  == 0)
+         {
+            throw SerialIOException("write timeout: wrote " + std::to_string(written) + " of "
+                                    + std::to_string(data.size()) + " bytes");
+         }
+         ssize_t result;
+         do
+         {
+            result = ::write(_ptyFd, data.data() + written, data.size() - written);
+         } while(result < 0 && errno == EINTR);
+         if(result < 0 && (errno == EAGAIN || errno == EWOULDBLOCK))
+         {
+            continue;
+         }
+         if(result < 0)
+         {
+            throw SerialIOException("writing to PTY: " + describeErrno());
+         }
+         written += static_cast<size_t>(result);
+      }
+      return;
+   }
+#endif
    if(_portHandle == nullptr)
    {
       throw SerialIOException("write called on closed port");

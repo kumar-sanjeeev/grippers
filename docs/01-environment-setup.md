@@ -240,6 +240,13 @@ Example:
   > The SDK sets the FTDI `latency_timer` to 1 ms automatically when it has
   > permission (the kernel default of 16 ms triples Modbus latency); for
   > unprivileged use, ship a udev rule that sets it at plug time.
+
+   Linux pseudo-terminals are also supported. This includes `/tmp/ttyUR`, the
+   symlink created by the Universal Robots Tool Communication Forwarder. The SDK
+   opens its `/dev/pts/*` target directly because libserialport accepts physical
+   serial devices but rejects PTYs. The bridge, rather than the PTY, owns the
+   baud rate and 8N1 configuration; those settings must still match the gripper
+   at the physical end of the bridge.
 - **Windows**: the FTDI latency timer is a driver setting (Device Manager →
   COM port → Port Settings → Advanced → Latency Timer); set it to 1 ms for
   high-rate control.
