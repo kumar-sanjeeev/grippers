@@ -4,7 +4,7 @@
 // Licensed under the BSD-3-Clause license; see LICENSE for details.
 
 //! \brief Serial implementation backed by libserialport (cross-platform:
-//!        Linux, Windows, macOS).
+//!        Linux, Windows, macOS), with a native Linux fallback for PTYs.
 //! Configures 8N1 with no flow control — the wire format of the Robotiq
 //! gripper's Modbus RTU link. Link parameters are fixed at construction
 //! (SerialConfig).
@@ -12,6 +12,9 @@
 //! sysfs. The kernel default of 16 ms silently triples Modbus cycle
 //! latency; 1 ms restores it. Failure to apply it (e.g. missing
 //! permissions, non-FTDI adapter) logs a warning and continues.
+//! Linux pseudo-terminals, including the /tmp/ttyUR bridge created by the
+//! Universal Robots tool communication forwarder, are opened directly because
+//! libserialport deliberately rejects /dev/pts devices.
 
 #pragma once
 
@@ -58,6 +61,9 @@ private:
    [[nodiscard]] bool applyLatencyTimer() const;
 
    struct sp_port* _portHandle = nullptr;
+#ifdef __linux__
+   int _ptyFd = -1;
+#endif
    SerialConfig _config;
    std::shared_ptr<Logger> _logger;
 };
