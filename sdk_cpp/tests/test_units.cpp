@@ -38,8 +38,8 @@ TEST(TestDeviceProfile, the_hand_e_carries_the_manual_ranges_and_the_measured_re
    EXPECT_DOUBLE_EQ(kHandE.minOpening, 0.0);
    EXPECT_DOUBLE_EQ(kHandE.maxOpening, 0.050);
    EXPECT_EQ(kHandE.openPosition, 3);
-   EXPECT_EQ(kHandE.closedPosition, 250);
-   EXPECT_DOUBLE_EQ(kHandE.registerPositionRange(), 247.0);
+   EXPECT_EQ(kHandE.closedPosition, 248);
+   EXPECT_DOUBLE_EQ(kHandE.registerPositionRange(), 245.0);
 }
 
 TEST(TestSpeedToRegister, the_hand_e_range_spans_the_whole_byte)
@@ -53,16 +53,16 @@ TEST(TestSpeedToRegister, the_hand_e_range_spans_the_whole_byte)
 TEST(TestOpeningToRegister, the_hand_e_stroke_spans_its_register_band)
 {
    EXPECT_EQ(openingToRegister(0.050, kHandE), 3);
-   EXPECT_EQ(openingToRegister(0.0, kHandE), 250);
-   EXPECT_EQ(openingToRegister(0.025, kHandE), 127); // 126.5 steps
+   EXPECT_EQ(openingToRegister(0.0, kHandE), 248);
+   EXPECT_EQ(openingToRegister(0.025, kHandE), 126); // 125.5 steps
    EXPECT_EQ(openingToRegister(0.060, kHandE), 3);
-   EXPECT_EQ(openingToRegister(-1e-4, kHandE), 250);
+   EXPECT_EQ(openingToRegister(-1e-4, kHandE), 248);
 }
 
 TEST(TestOpeningFromRegister, the_hand_e_band_spans_its_stroke)
 {
    EXPECT_DOUBLE_EQ(openingFromRegister(3, kHandE).value(), 0.050);
-   EXPECT_DOUBLE_EQ(openingFromRegister(250, kHandE).value(), 0.0);
+   EXPECT_DOUBLE_EQ(openingFromRegister(248, kHandE).value(), 0.0);
    EXPECT_DOUBLE_EQ(openingFromRegister(0, kHandE).value(), 0.050);
    EXPECT_DOUBLE_EQ(openingFromRegister(255, kHandE).value(), 0.0);
 }

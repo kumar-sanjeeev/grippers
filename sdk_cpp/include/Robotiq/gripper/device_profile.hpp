@@ -57,7 +57,12 @@ inline constexpr DeviceProfile k2F85{0.020, 0.150, 0.0, 0.085, 3, 230};
 //! \brief The measured profile for the Hand-E
 //!
 //! \warning Assumes that the gripper is in parallel-finger mode.
-inline constexpr DeviceProfile kHandE{0.020, 0.150, 0.0, 0.050, 3, 250};
+//!
+//! The register endpoints were measured on a Hand-E with standard fingertips:
+//! rPR 0 settles at gPO 3, while rPR 255 closes the fingertips and settles at
+//! gPO 248. Commanding past that measured endpoint can raise a gripper fault,
+//! so conversions deliberately stop at 248.
+inline constexpr DeviceProfile kHandE{0.020, 0.150, 0.0, 0.050, 3, 248};
 
 } // namespace profiles
 
